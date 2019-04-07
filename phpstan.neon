@@ -6,7 +6,6 @@ includes:
 
 parameters:
 	ignoreErrors:
-		# Will be removed same time as from Doctrine
-		- '#^Fetching class constant class of deprecated class Doctrine\\Common\\Cache\\(ApcCache|MemcacheCache|XcacheCache)\.$#'
+		- '#^Parameter \#1 \$type of method Nette\\DI\\Definitions\\ServiceDefinition::setType\(\) expects string|null, Doctrine\\ORM\\Configuration|string given$#'
 		# No replacement available yet
 		- '#^Call to deprecated method registerUniqueLoader\(\) of class Doctrine\\Common\\Annotations\\AnnotationRegistry\.$#'

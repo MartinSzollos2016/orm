@@ -2,52 +2,52 @@
 
 namespace Nettrine\ORM\DI;
 
+use Doctrine\Common\Proxy\AbstractProxyFactory;
 use Doctrine\DBAL\Connection;
 use Doctrine\ORM\Configuration;
 use Doctrine\ORM\EntityManager as DoctrineEntityManager;
 use Doctrine\ORM\Mapping\UnderscoreNamingStrategy;
-use Nette\DI\CompilerExtension;
+use Nette\DI\Definitions\Statement;
 use Nette\DI\Helpers;
-use Nette\DI\Statement;
 use Nette\InvalidArgumentException;
+use Nette\Schema\Expect;
+use Nette\Schema\Schema;
 use Nettrine\ORM\EntityManagerDecorator;
 use Nettrine\ORM\Exception\Logical\InvalidStateException;
 use Nettrine\ORM\ManagerRegistry;
 use Nettrine\ORM\Mapping\ContainerEntityListenerResolver;
 
-final class OrmExtension extends CompilerExtension
+final class OrmExtension extends AbstractExtension
 {
 
-	/** @var mixed[] */
-	private $defaults = [
-		'entityManagerDecoratorClass' => EntityManagerDecorator::class,
-		'configurationClass' => Configuration::class,
-		'configuration' => [
-			'proxyDir' => '%tempDir%/proxies',
-			'autoGenerateProxyClasses' => null,
-			'proxyNamespace' => 'Nettrine\Proxy',
-			'metadataDriverImpl' => null,
-			'entityNamespaces' => [],
-			//TODO named query
-			//TODO named native query
-			'customStringFunctions' => [],
-			'customNumericFunctions' => [],
-			'customDatetimeFunctions' => [],
-			'customHydrationModes' => [],
-			'classMetadataFactoryName' => null,
-			//TODO filters
-			'defaultRepositoryClassName' => null,
-			'namingStrategy' => UnderscoreNamingStrategy::class,
-			'quoteStrategy' => null,
-			'entityListenerResolver' => null,
-			'repositoryFactory' => null,
-			'defaultQueryHints' => [],
-		],
-	];
+	public function getConfigSchema(): Schema
+	{
+		return Expect::structure([
+			'entityManagerDecoratorClass' => Expect::string(EntityManagerDecorator::class),
+			'configurationClass' => Expect::string(Configuration::class),
+			'configuration' => Expect::structure([
+				'proxyDir' => Expect::string('%tempDir%/proxies'),
+				'autoGenerateProxyClasses' => Expect::anyOf(Expect::int(), Expect::bool())->default(AbstractProxyFactory::AUTOGENERATE_FILE_NOT_EXISTS),
+				'proxyNamespace' => Expect::string('Nettrine\Proxy'),
+				'metadataDriverImpl' => Expect::string(),
+				'entityNamespaces' => Expect::listOf('string'),
+				'customStringFunctions' => Expect::array(),
+				'customNumericFunctions' => Expect::array(),
+				'customDatetimeFunctions' => Expect::array(),
+				'customHydrationModes' => Expect::array(),
+				'classMetadataFactoryName' => Expect::string(),
+				'defaultRepositoryClassName' => Expect::string(),
+				'namingStrategy' => Expect::string(UnderscoreNamingStrategy::class),
+				'quoteStrategy' => Expect::string(),
+				'entityListenerResolver' => Expect::string(),
+				'repositoryFactory' => Expect::string(),
+				'defaultQueryHints' => Expect::array(),
+			]),
+		]);
+	}
 
 	public function loadConfiguration(): void
 	{
-		$this->validateConfig($this->defaults);
 		$this->loadDoctrineConfiguration();
 		$this->loadEntityManagerConfiguration();
 	}
@@ -55,12 +55,11 @@ final class OrmExtension extends CompilerExtension
 	public function loadDoctrineConfiguration(): void
 	{
 		$builder = $this->getContainerBuilder();
+		$globalConfig = (array) $this->config;
+		$config = (array) $globalConfig['configuration'];
 
-		$config = $this->validateConfig($this->defaults['configuration'], $this->config['configuration']);
-		$config = Helpers::expand($config, $builder->parameters);
-
-		$configurationClass = $this->config['configurationClass'];
-
+		// @validate configuration class is subclass of origin one
+		$configurationClass = $globalConfig['configurationClass'];
 		if (!is_a($configurationClass, Configuration::class, true)) {
 			throw new InvalidArgumentException('Configuration class must be subclass of ' . Configuration::class . ', ' . $configurationClass . ' given.');
 		}
@@ -69,10 +68,14 @@ final class OrmExtension extends CompilerExtension
 			->setType($configurationClass);
 
 		if ($config['proxyDir'] !== null) {
-			$configuration->addSetup('setProxyDir', [$config['proxyDir']]);
+			$configuration->addSetup('setProxyDir', [Helpers::expand($config['proxyDir'], $builder->parameters)]);
 		}
 
-		if ($config['autoGenerateProxyClasses'] !== null) {
+		if (is_bool($config['autoGenerateProxyClasses'])) {
+			$configuration->addSetup('setAutoGenerateProxyClasses', [
+				$config['autoGenerateProxyClasses'] === true ? AbstractProxyFactory::AUTOGENERATE_FILE_NOT_EXISTS : AbstractProxyFactory::AUTOGENERATE_NEVER,
+			]);
+		} else if (is_int($config['autoGenerateProxyClasses'])) {
 			$configuration->addSetup('setAutoGenerateProxyClasses', [$config['autoGenerateProxyClasses']]);
 		}
 
@@ -131,10 +134,10 @@ final class OrmExtension extends CompilerExtension
 	public function loadEntityManagerConfiguration(): void
 	{
 		$builder = $this->getContainerBuilder();
-		$config = $this->getConfig();
+		$config = (array) $this->config;
 
+		// @validate entity manager decorator has a real class
 		$entityManagerDecoratorClass = $config['entityManagerDecoratorClass'];
-
 		if (!class_exists($entityManagerDecoratorClass)) {
 			throw new InvalidStateException(sprintf('EntityManagerDecorator class "%s" not found', $entityManagerDecoratorClass));
 		}

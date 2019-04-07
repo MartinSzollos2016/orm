@@ -6,69 +6,43 @@ use Doctrine\Common\Annotations\AnnotationReader;
 use Doctrine\Common\Annotations\AnnotationRegistry;
 use Doctrine\Common\Annotations\CachedReader;
 use Doctrine\Common\Annotations\Reader;
-use Doctrine\Common\Cache\ApcCache;
-use Doctrine\Common\Cache\ApcuCache;
-use Doctrine\Common\Cache\ArrayCache;
-use Doctrine\Common\Cache\FilesystemCache;
-use Doctrine\Common\Cache\MemcacheCache;
-use Doctrine\Common\Cache\MemcachedCache;
-use Doctrine\Common\Cache\RedisCache;
-use Doctrine\Common\Cache\VoidCache;
-use Doctrine\Common\Cache\XcacheCache;
-use Doctrine\ORM\Configuration;
-use Nette\DI\CompilerExtension;
-use Nette\DI\Helpers;
-use Nette\DI\ServiceDefinition;
 use Nette\PhpGenerator\ClassType;
 use Nette\PhpGenerator\PhpLiteral;
-use Nette\Utils\Validators;
+use Nette\Schema\Expect;
+use Nette\Schema\Schema;
+use Nettrine\ORM\DI\Helpers\CacheBuilder;
 use Nettrine\ORM\Exception\Logical\InvalidStateException;
 use Nettrine\ORM\Mapping\AnnotationDriver;
 
-class OrmAnnotationsExtension extends CompilerExtension
+class OrmAnnotationsExtension extends AbstractExtension
 {
 
-	public const DRIVERS = [
-		'apc' => ApcCache::class,
-		'apcu' => ApcuCache::class,
-		'array' => ArrayCache::class,
-		'filesystem' => FilesystemCache::class,
-		'memcache' => MemcacheCache::class,
-		'memcached' => MemcachedCache::class,
-		'redis' => RedisCache::class,
-		'void' => VoidCache::class,
-		'xcache' => XcacheCache::class,
-	];
-
-	/** @var mixed[] */
-	public $defaults = [
-		'paths' => [], //'%appDir%'
-		'excludePaths' => [],
-		'ignore' => [],
-		'defaultCache' => 'filesystem',
-		'cache' => null,
-		'debug' => false,
-	];
+	public function getConfigSchema(): Schema
+	{
+		return Expect::structure([
+			'debug' => Expect::bool(false),
+			'cache' => Expect::string()->nullable(),
+			'defaultCache' => Expect::string('filesystem')->nullable(),
+			'paths' => Expect::listOf('string'),
+			'excludePaths' => Expect::listOf('string'),
+			'ignore' => Expect::listOf('string'),
+		]);
+	}
 
 	/**
 	 * Register services
 	 */
 	public function loadConfiguration(): void
 	{
-		if ($this->compiler->getExtensions(OrmExtension::class) === []) {
-			throw new InvalidStateException(
-				sprintf('You should register %s before %s.', self::class, static::class)
-			);
-		}
+		// Validates needed extension
+		$this->validate();
 
 		$builder = $this->getContainerBuilder();
-		$config = $this->validateConfig($this->defaults);
+		$config = (array) $this->config;
 
 		$reader = $builder->addDefinition($this->prefix('annotationReader'))
 			->setType(AnnotationReader::class)
 			->setAutowired(false);
-
-		Validators::assertField($config, 'ignore', 'array');
 
 		foreach ($config['ignore'] as $annotationName) {
 			$reader->addSetup('addGlobalIgnoredName', [$annotationName]);
@@ -76,8 +50,9 @@ class OrmAnnotationsExtension extends CompilerExtension
 		}
 
 		if ($config['cache'] === null && $config['defaultCache'] !== null) {
-			$this->getDefaultCache()
-				->setAutowired(false);
+			CacheBuilder::of($this)
+				->withDefault($config['defaultCache'])
+				->getDefinition('annotationsCache');
 		} elseif ($config['cache'] !== null) {
 			$builder->addDefinition($this->prefix('annotationsCache'))
 				->setFactory($config['cache'])
@@ -95,12 +70,13 @@ class OrmAnnotationsExtension extends CompilerExtension
 			]);
 
 		$builder->addDefinition($this->prefix('annotationDriver'))
-			->setFactory(AnnotationDriver::class, [$this->prefix('@reader'), Helpers::expand($config['paths'], $builder->parameters)])
-			->addSetup('addExcludePaths', [Helpers::expand($config['excludePaths'], $builder->parameters)]);
+			->setFactory(AnnotationDriver::class, [$this->prefix('@reader'), $config['paths']])
+			->addSetup('addExcludePaths', [$config['excludePaths']]);
 
-		$builder->getDefinitionByType(Configuration::class)
-			->addSetup('setMetadataDriverImpl', [$this->prefix('@annotationDriver')]);
+		$configurationDef = $this->getConfigurationDef();
+		$configurationDef->addSetup('setMetadataDriverImpl', [$this->prefix('@annotationDriver')]);
 
+		// Just for runtime
 		AnnotationRegistry::registerUniqueLoader('class_exists');
 	}
 
@@ -110,26 +86,6 @@ class OrmAnnotationsExtension extends CompilerExtension
 		$original = (string) $initialize->getBody();
 		$initialize->setBody('?::registerUniqueLoader("class_exists");' . "\n", [new PhpLiteral(AnnotationRegistry::class)]);
 		$initialize->addBody($original);
-	}
-
-	protected function getDefaultCache(): ServiceDefinition
-	{
-		$config = $this->getConfig();
-		$builder = $this->getContainerBuilder();
-
-		if (!isset(self::DRIVERS[$config['defaultCache']])) {
-			throw new InvalidStateException(sprintf('Unsupported default cache driver "%s"', $config['defaultCache']));
-		}
-
-		$driverCache = $builder->addDefinition($this->prefix('annotationsCache'))
-			->setFactory(self::DRIVERS[$config['defaultCache']])
-			->setAutowired(false);
-
-		if ($config['defaultCache'] === 'filesystem') {
-			$driverCache->setArguments([$builder->parameters['tempDir'] . '/cache/Doctrine.Annotations']);
-		}
-
-		return $driverCache;
 	}
 
 }
